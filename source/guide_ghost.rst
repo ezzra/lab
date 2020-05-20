@@ -279,51 +279,79 @@ If it's not in state RUNNING, check your configuration.
 Update via script
 -----------------
 
-As an alternative to this manual process of updating Ghost to a new version you can also use the following script:
+As an alternative to this manual process of updating Ghost to a new version you can also use a script. Create a file ``~/bin/update-ghost`` with the following content:
 
-.. code-block:: console
- :emphasize-lines: 4
+.. code-block:: sh
 
- #!/bin/bash
- #set -v
- # created by peleke.de
- GHOSTDIR=~/ghost
- PACKAGE_VERSION_OLD=$(sed -nE 's/^\s*"version": "(.*?)",$/\1/p' $GHOSTDIR/current/package.json)
- CURRENT_GHOST=$(curl -s https://api.github.com/repos/TryGhost/Ghost/releases | grep tag_name | head -n 1 | cut -d '"' -f 4)
- CURRENT_GHOST_DOWNLOAD=$(curl -s https://api.github.com/repos/TryGhost/Ghost/releases/latest | grep browser_download_url | cut -d '"' -f 4)
- CURRENT_GHOST_FILE=$(echo $CURRENT_GHOST_DOWNLOAD | sed 's:.*/::')
- echo "installed version: $PACKAGE_VERSION_OLD"
- echo "available version: $CURRENT_GHOST"
- cd $GHOSTDIR
- if [[ $CURRENT_GHOST != $PACKAGE_VERSION_OLD ]]
- then
-   read -r -p "Do you want to update Ghost $PACKAGE_VERSION_OLD to version $CURRENT_GHOST? [Y/n] " response
-   if [[ $response =~ ^([yY]|"")$ ]]
-   then
-     echo "downloading and unpacking ghost $CURRENT_GHOST ..."
-     cd $GHOSTDIR/versions/
-     curl -LOk $CURRENT_GHOST_DOWNLOAD
-     unzip $GHOSTDIR/versions/$CURRENT_GHOST_FILE -d $CURRENT_GHOST
-     rm $GHOSTDIR/versions/$CURRENT_GHOST_FILE
-     echo "Updating ghost ..."
-     cd $GHOSTDIR/versions/$CURRENT_GHOST
-     yarn install --production
-     echo "Migrating ghost database ..."
-     cd $GHOSTDIR
-     NODE_ENV=production knex-migrator migrate --mgpath $GHOSTDIR/versions/$CURRENT_GHOST
-     ln -sfn $GHOSTDIR/versions/$CURRENT_GHOST $GHOSTDIR/current
-     PACKAGE_VERSION=$(sed -nE 's/^\s*"version": "(.*?)",$/\1/p' $GHOSTDIR/current/package.json)
-     echo "Ghost $PACKAGE_VERSION_OLD has been updated to version $PACKAGE_VERSION"
-     echo "Restarting Ghost. This may take a few seconds ..."
-     supervisorctl restart ghost
-     supervisorctl status
-     echo "If something seems wrong, please check the logs: 'supervisorctl tail ghost'"
-     echo "To revert to version $PACKAGE_VERSION_OLD run the following command: 'ln -sfn $GHOSTDIR/versions/$PACKAGE_VERSION_OLD $GHOSTDIR/current' and restart ghost using 'supervisorctl restart ghost'."
-   fi
- else
-   echo "-> Ghost is already up-to-date, no update needed."
- fi
+  #!/bin/bash
+  # originally created by peleke.de, revised by ezra
+  INTERACTIVE=true
+  if [[ "$1" = "--non-interactive" ]] ; then
+    INTERACTIVE=false
+  fi
+  GHOSTDIR=~/ghost
+  CURRENT_VERSION=$(sed -nE 's/^\s*"version": "(.*?)",$/\1/p' "$GHOSTDIR/current/package.json")
+  LATEST_VERSION=$(curl -s https://api.github.com/repos/TryGhost/Ghost/releases | grep tag_name | head -n 1 | cut -d '"' -f 4)
+  LATEST_VERSION_URL=$(curl -s https://api.github.com/repos/TryGhost/Ghost/releases/latest | grep browser_download_url | cut -d '"' -f 4)
+  LATEST_VERSION_FILENAME=$(echo "$LATEST_VERSION_URL" | sed 's:.*/::')
+  
+  if [[ $INTERACTIVE == true ]] ; then
+    echo "installed version: $CURRENT_VERSION"
+    echo "available version: $LATEST_VERSION"
+  fi
+  
+  if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]] ; then
+    if [[ $INTERACTIVE == true ]] ; then
+      read -r -p "Do you want to update Ghost $CURRENT_VERSION to version $LATEST_VERSION? [Y/n] " response
+    fi
+    if [[ $response =~ ^([yY]|"")$ || $INTERACTIVE == false ]]
+    then
+      echo "downloading and unpacking ghost $LATEST_VERSION ..."
+      cd "$GHOSTDIR/versions/" || exit 127
+      curl -LOk "$LATEST_VERSION_URL"
+      unzip "$GHOSTDIR/versions/$LATEST_VERSION_FILENAME" -d "$LATEST_VERSION"
+      rm "$GHOSTDIR/versions/$LATEST_VERSION_FILENAME"
+  
+      echo "Updating ghost ..."
+      cd "$GHOSTDIR/versions/$LATEST_VERSION" || exit 127
+      npm install --production
+  
+      echo "Migrating ghost database ..."
+      cd "$GHOSTDIR" || exit 127
+      NODE_ENV=production knex-migrator migrate --mgpath "$GHOSTDIR/versions/$LATEST_VERSION"
+  
+      # change 'current' symbolic link to new latest version
+      ln -sfn "$GHOSTDIR/versions/$LATEST_VERSION" "$GHOSTDIR/current"
+      NEW_VERSION=$(sed -nE 's/^\s*"version": "(.*?)",$/\1/p' "$GHOSTDIR/current/package.json")
+      echo "Ghost $CURRENT_VERSION has been updated to version $NEW_VERSION"
+  
+      echo "Restarting Ghost. This may take a few seconds ..."
+      supervisorctl restart ghost
+      supervisorctl status
+  
+      echo "If something seems wrong, please check the logs: 'supervisorctl tail ghost'"
+      echo "To revert to version $CURRENT_VERSION run the following command: 'ln -sfn $GHOSTDIR/versions/$CURRENT_VERSION $GHOSTDIR/current' and restart ghost using 'supervisorctl restart ghost'."
+    fi
+  else
+    if [[ $INTERACTIVE == true ]] ; then
+      echo "-> Ghost is already up-to-date, no update needed."
+    fi
+  fi
 
+Then make it executable:
+
+::
+
+  [isabell@stardust ~]$ chmod u+x ~/bin/update-ghost
+  [isabell@stardust ~]$
+
+You can execute the script manually or automated with ``--non-interative`` for example with a cronjob:
+
+::
+
+  @daily /home/$USER/bin/update-ghost --non-interactive | mailx -E -s "updated Ghost on uberspace $USER" $LOGNAME
+
+The part with ``| mailx -E [...]`` just makes sure to send an email only if an update was performed. Read the manual :manual:`uberspace manual cron article <daemons-cron>` to learn more about cronjobs.
 
 .. _Ghost: https://ghost.org
 .. _settings: https://docs.ghost.org/api/ghost-cli/
@@ -331,6 +359,6 @@ As an alternative to this manual process of updating Ghost to a new version you 
 
 ----
 
-Tested with Ghost 3.13.4, Uberspace 7.6.0.0
+Tested with Ghost 3.16.1, Uberspace 7.6.1.2
 
 .. author_list::
